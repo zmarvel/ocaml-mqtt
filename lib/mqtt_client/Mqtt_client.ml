@@ -138,16 +138,20 @@ let shutdown client =
   let%lwt () = Lwt_io.close oc in
   Log.debug (fun log -> log "[%s] Client connection shut down." client.id)
 
+exception Connection_error
+
 let open_tls_connection ~client_id ~ca_file host port =
-  try%lwt
-    let%lwt authenticator = X509_lwt.authenticator (`Ca_file ca_file) in
-    Tls_lwt.connect authenticator (host, port)
-  with exn ->
-    let%lwt () =
-      Log.err (fun log ->
-          log "[%s] could not get address info for %S" client_id host)
-    in
-    Lwt.fail exn
+  let%lwt authenticator = X509_lwt.authenticator (`Ca_file ca_file) in
+  let%lwt connect_result = Tls_lwt.connect authenticator (host, port) in
+  connect_result
+  |> Result.fold
+       ~ok:(fun r -> Lwt.return r)
+       ~error:(fun (`Msg e) ->
+         let _ =
+           Log.err (fun log ->
+               log "[%s] could not get address info for %S: %s" client_id host e)
+         in
+         Lwt.fail Connection_error)
 
 let run_pinger ~keep_alive client =
   let%lwt () = Log.debug (fun log -> log "Starting ping timer...") in
@@ -161,8 +165,6 @@ let run_pinger ~keep_alive client =
     loop ()
   in
   loop ()
-
-exception Connection_error
 
 let open_tcp_connection ~client_id host port =
   let%lwt addresses = Lwt_unix.getaddrinfo host (string_of_int port) [] in
